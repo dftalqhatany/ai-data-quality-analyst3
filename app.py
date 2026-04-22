@@ -8,7 +8,6 @@ from src.io_utils import load_dataframe, list_excel_sheets
 from src.analyzer import assess_readiness, detect_outliers
 from src.ai_assistant import (
     ask_gpt,
-    detect_language,
     analyze_dataset_and_generate_questions,
 )
 from src.charts import missing_chart, outlier_chart
@@ -61,7 +60,6 @@ def get_ui_labels(language="en"):
             "file_ready": "تم الاحتفاظ بالملف بنجاح.",
             "api_key_missing": "متغير OPENAI_API_KEY غير موجود.",
             "dataset_type": "نوع البيانات",
-            "smart_questions_button": "توليد أسئلة ذكية",
             "business_questions": "أسئلة أعمال وتحليل",
             "quality_questions": "أسئلة جودة البيانات",
             "question_count": "عدد الأسئلة المقترحة",
@@ -71,6 +69,7 @@ def get_ui_labels(language="en"):
             "language_ar": "العربية",
             "language_en": "English",
             "footer_note": "الأسئلة المقترحة تعتمد على بنية الملف وجودة البيانات ونوعها.",
+            "no_questions_generated": "لم يتم توليد أسئلة مقترحة لهذا الملف.",
         }
 
     return {
@@ -117,7 +116,6 @@ def get_ui_labels(language="en"):
         "file_ready": "File is stored successfully.",
         "api_key_missing": "OPENAI_API_KEY is missing.",
         "dataset_type": "Dataset Type",
-        "smart_questions_button": "Generate Smart Questions",
         "business_questions": "Business & Insight Questions",
         "quality_questions": "Data Quality Questions",
         "question_count": "Suggested Question Count",
@@ -127,6 +125,7 @@ def get_ui_labels(language="en"):
         "language_ar": "Arabic",
         "language_en": "English",
         "footer_note": "Suggested questions are based on file structure, data quality, and inferred dataset type.",
+        "no_questions_generated": "No suggested questions were generated for this file.",
     }
 
 
@@ -467,10 +466,6 @@ def build_ai_question_payload(df, issues, profile):
 
 
 def build_suggested_questions(df, issues, profile, language="en"):
-    """
-    1) Tries AI-based dataset understanding + dynamic question generation
-    2) Falls back to local domain-aware question generation
-    """
     target_question_count = estimate_question_count(df)
     ai_context = build_ai_question_payload(df, issues, profile)
 
@@ -513,7 +508,6 @@ def build_suggested_questions(df, issues, profile, language="en"):
 def init_session_state():
     defaults = {
         "history": [],
-        "last_language": "en",
         "ui_language": "ar",
         "uploaded_file_name": None,
         "uploaded_file_bytes": None,
@@ -522,10 +516,10 @@ def init_session_state():
         "latest_outliers": None,
         "latest_df": None,
         "latest_issues": None,
-        "file_summary_result": None,
         "file_profile": None,
         "smart_questions_result": None,
         "dataset_type": "unknown",
+        "question_input": "",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -544,10 +538,22 @@ def get_uploaded_file_from_session():
     return buffer
 
 
+def apply_suggested_question(question_text: str):
+    st.session_state["question_input"] = question_text
+
+
 st.set_page_config(page_title="AI Data Quality Analyst", layout="wide")
 init_session_state()
 
-current_language = st.session_state.get("ui_language", "ar")
+with st.sidebar:
+    current_language = st.radio(
+        "لغة الواجهة / UI Language",
+        options=["ar", "en"],
+        format_func=lambda x: "العربية" if x == "ar" else "English",
+        index=0 if st.session_state.get("ui_language", "ar") == "ar" else 1,
+        key="ui_language",
+    )
+
 ui = get_ui_labels(current_language)
 
 st.title(ui["title"])
@@ -555,19 +561,6 @@ st.title(ui["title"])
 if not os.getenv("OPENAI_API_KEY"):
     st.error(ui["api_key_missing"])
     st.stop()
-
-with st.sidebar:
-    st.subheader(ui["language_label"])
-    language_choice = st.radio(
-        ui["language_label"],
-        options=["ar", "en"],
-        format_func=lambda x: ui["language_ar"] if x == "ar" else ui["language_en"],
-        index=0 if current_language == "ar" else 1,
-        key="ui_language_radio",
-    )
-    st.session_state["ui_language"] = language_choice
-    current_language = language_choice
-    ui = get_ui_labels(current_language)
 
 with st.sidebar:
     st.subheader(ui["analysis_type"])
@@ -597,11 +590,14 @@ if uploaded_file is not None:
 
 uploaded = get_uploaded_file_from_session()
 
-question = st.text_input(
+st.session_state["question_input"] = st.text_input(
     ui["question_label"],
-    key="question_input",
+    value=st.session_state.get("question_input", ""),
+    key="question_input_widget",
     placeholder=ui["question_placeholder"],
 )
+
+question = st.session_state.get("question_input", "")
 
 if uploaded is not None:
     st.success(ui["file_ready"])
@@ -693,27 +689,38 @@ if uploaded is not None:
             for idx, suggested_question in enumerate(business_questions):
                 q_col, btn_col = st.columns([5, 1])
                 q_col.write(f"- {suggested_question}")
-                if btn_col.button(ui["use_question"], key=f"use_business_question_{idx}"):
-                    st.session_state["question_input"] = suggested_question
-                    st.rerun()
+                btn_col.button(
+                    ui["use_question"],
+                    key=f"use_business_question_{idx}",
+                    on_click=apply_suggested_question,
+                    args=(suggested_question,),
+                )
 
         if quality_questions:
             st.markdown(f"### {ui['quality_questions']}")
             for idx, suggested_question in enumerate(quality_questions):
                 q_col, btn_col = st.columns([5, 1])
                 q_col.write(f"- {suggested_question}")
-                if btn_col.button(ui["use_question"], key=f"use_quality_question_{idx}"):
-                    st.session_state["question_input"] = suggested_question
-                    st.rerun()
+                btn_col.button(
+                    ui["use_question"],
+                    key=f"use_quality_question_{idx}",
+                    on_click=apply_suggested_question,
+                    args=(suggested_question,),
+                )
 
         if all_questions:
             st.markdown(f"### {ui['all_suggested_questions']}")
             for idx, suggested_question in enumerate(all_questions):
                 q_col, btn_col = st.columns([5, 1])
                 q_col.write(f"- {suggested_question}")
-                if btn_col.button(ui["use_question"], key=f"use_question_{idx}"):
-                    st.session_state["question_input"] = suggested_question
-                    st.rerun()
+                btn_col.button(
+                    ui["use_question"],
+                    key=f"use_question_{idx}",
+                    on_click=apply_suggested_question,
+                    args=(suggested_question,),
+                )
+        else:
+            st.info(ui["no_questions_generated"])
 
         st.caption(ui["footer_note"])
 
@@ -728,12 +735,9 @@ if uploaded is not None:
         if not question.strip():
             st.warning(ui["no_question_warning"])
         else:
-            language = current_language
-            st.session_state["last_language"] = language
-
             context = summarize_context(df, issues, outliers)
-            result = ask_gpt(question, context, analysis_type, language=language)
-            result["_language"] = language
+            result = ask_gpt(question, context, analysis_type, language=current_language)
+            result["_language"] = current_language
 
             st.session_state["history"].append((question, result))
             st.session_state["history"] = st.session_state["history"][-5:]
@@ -745,8 +749,8 @@ if uploaded is not None:
 
 if st.session_state.get("latest_result") is not None:
     result = st.session_state["latest_result"]
-    language = result.get("_language", st.session_state["last_language"])
-    ui = get_ui_labels(language)
+    current_language = st.session_state.get("ui_language", "ar")
+    ui = get_ui_labels(current_language)
 
     outliers = st.session_state["latest_outliers"]
     df = st.session_state["latest_df"]
@@ -783,8 +787,8 @@ if st.session_state.get("latest_result") is not None:
         st.write(f"**{ui['constant_columns']}:** {issues['constant_columns']}")
 
     with tab2:
-        st.pyplot(missing_chart(df, language=language))
-        st.pyplot(outlier_chart(outliers, language=language))
+        st.pyplot(missing_chart(df, language=current_language))
+        st.pyplot(outlier_chart(outliers, language=current_language))
 
     with tab3:
         st.dataframe(df)
