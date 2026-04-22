@@ -107,13 +107,6 @@ def analyze_dataset_and_generate_questions(
     language: str = "ar",
     target_question_count: int = 10,
 ) -> Dict[str, Any]:
-    """
-    Uses AI to:
-    1) infer dataset type
-    2) summarize the file
-    3) generate dynamic, deeper questions
-    """
-
     if language == "ar":
         extra_instruction = """
 - اكتب العربية بصياغة طبيعية وفصحى واضحة.
